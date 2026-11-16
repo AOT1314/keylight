@@ -1,0 +1,728 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#100e0b">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="琴键跟弹">
+  <meta name="application-name" content="琴键跟弹">
+  <meta name="format-detection" content="telephone=no">
+  <meta name="description" content="上传五线谱或简谱，看见每个音落在钢琴的哪一键，跟着发光的琴键练习。">
+  <title>琴键跟弹 · 看见每个音落在哪一键</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="assets/icon-192.png">
+  <link rel="apple-touch-icon" sizes="152x152" href="assets/icon-152.png">
+  <link rel="apple-touch-icon" sizes="167x167" href="assets/icon-167.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="assets/icon-180.png">
+  <!-- Fetch the module graph in parallel instead of waiting for app.js to
+       discover each import; this is the biggest win on high-latency Wi-Fi. -->
+  <link rel="modulepreload" href="app.js">
+  <link rel="modulepreload" href="js/util.js">
+  <link rel="modulepreload" href="js/model.js">
+  <link rel="modulepreload" href="js/audio.js">
+  <link rel="modulepreload" href="js/playback.js">
+  <link rel="modulepreload" href="js/stage.js">
+  <link rel="modulepreload" href="js/piano-roll.js">
+  <link rel="modulepreload" href="js/omr.js">
+  <link rel="modulepreload" href="js/jianpu-ocr.js">
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    /* Critical boot screen: paints before the main stylesheet is parsed so a
+       slow first launch on a phone never looks like a blank white page. */
+    #bootSplash {
+      position: fixed; inset: 0; z-index: 99999;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 12px; background: #100e0b; color: #f5eee3;
+      font-family: "Aptos", "Segoe UI", "Microsoft YaHei", sans-serif;
+      transition: opacity .32s ease; opacity: 1;
+    }
+    #bootSplash.is-hidden { opacity: 0; pointer-events: none; }
+    .boot-mark {
+      width: 56px; height: 56px; border-radius: 14px;
+      display: flex; align-items: flex-end; justify-content: center; gap: 4px;
+      padding: 12px 11px; box-sizing: border-box;
+      background: linear-gradient(145deg, #f5ddba, #d7a257);
+      box-shadow: 0 12px 36px rgba(218, 160, 80, .18);
+    }
+    .boot-mark i { width: 7px; border-radius: 2px; background: #1a1510; display: block; }
+    .boot-mark i:nth-child(1) { height: 19px; }
+    .boot-mark i:nth-child(2) { height: 30px; }
+    .boot-mark i:nth-child(3) { height: 14px; }
+    .boot-title { font-family: "Iowan Old Style", "Songti SC", "STSong", serif; font-size: 19px; letter-spacing: .12em; margin-top: 3px; }
+    .boot-status { color: #8f8272; font-size: 10px; letter-spacing: .08em; }
+  </style>
+</head>
+<body>
+  <div id="bootSplash" aria-hidden="true">
+    <div class="boot-mark"><i></i><i></i><i></i></div>
+    <div class="boot-title">琴键跟弹</div>
+    <div class="boot-status">正在准备琴键…</div>
+  </div>
+  <div class="ambient ambient-a" aria-hidden="true"></div>
+  <div class="ambient ambient-b" aria-hidden="true"></div>
+  <div class="grain" aria-hidden="true"></div>
+
+  <div id="app">
+    <header class="appbar" id="appbar">
+      <button class="brand" id="brandHome" aria-label="回到首页">
+        <span class="brand-mark" aria-hidden="true">
+          <i></i><i></i><i></i>
+        </span>
+        <span class="brand-type">
+          <b>琴键跟弹</b>
+          <small>KEYLIGHT</small>
+        </span>
+      </button>
+
+      <nav class="stepnav" id="stepNav" aria-label="学习流程">
+        <span class="step" data-step="import"><i>01</i>导入琴谱</span>
+        <span class="step-line"></span>
+        <span class="step" data-step="review"><i>02</i>校对音符</span>
+        <span class="step-line"></span>
+        <span class="step" data-step="play"><i>03</i>跟灯弹奏</span>
+      </nav>
+
+      <div class="appbar-actions">
+        <button class="btn btn-quiet" id="btnHelp">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.8 9a2.3 2.3 0 1 1 3.3 2.1c-.8.4-1.1.9-1.1 1.9"/><path d="M12 16.8h.01"/></svg>
+          使用说明
+        </button>
+        <button class="btn btn-primary btn-small" id="btnImportTop">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5"/><path d="M5 15v3.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V15"/></svg>
+          导入琴谱
+        </button>
+      </div>
+    </header>
+
+    <main id="main">
+      <!-- ═══════════════ HOME ═══════════════ -->
+      <section class="view view-home is-active" id="viewHome">
+        <div class="hero">
+          <div class="hero-copy">
+            <div class="eyebrow reveal"><span class="eyebrow-dot"></span>为学新谱的人而做</div>
+            <h1 class="reveal reveal-2">看见每一个音，<br><em>落在哪一键。</em></h1>
+            <p class="hero-lead reveal reveal-3">上传五线谱或简谱，自动变成会发光的琴键指引。<br>哪个音、什么时候、按多久，一眼就知道。</p>
+            <div class="hero-actions reveal reveal-4">
+              <button class="btn btn-primary btn-large" id="btnHeroImport">
+                上传一张琴谱
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h15m0 0-5.5-5.5M19 12l-5.5 5.5"/></svg>
+              </button>
+              <button class="btn btn-ghost btn-large" id="btnPlayDemo">
+                <span class="play-dot"><svg viewBox="0 0 24 24"><path d="M8 5.5v13l10-6.5z"/></svg></span>
+                看一段跟弹演示
+              </button>
+            </div>
+            <div class="format-row reveal reveal-5">
+              <span>支持</span>
+              <b>五线谱照片</b><i></i><b>简谱</b><i></i><b>MusicXML</b><i></i><b>MIDI</b>
+            </div>
+          </div>
+
+          <div class="hero-stage reveal reveal-3" aria-label="琴键跟弹效果预览">
+            <div class="hero-stage-glow"></div>
+            <div class="hero-window">
+              <div class="hero-window-bar">
+                <span class="win-dots"><i></i><i></i><i></i></span>
+                <span class="hero-song"><b>小星星</b><small>入门 · C 大调</small></span>
+                <span class="hero-live"><i></i>跟弹预览</span>
+              </div>
+              <div class="hero-canvas-wrap">
+                <canvas id="heroCanvas"></canvas>
+                <div class="hero-key-hint" id="heroKeyHint">
+                  <span class="key-chip" id="heroKeyChip">C4</span>
+                  <span>现在按这里</span>
+                </div>
+                <div class="hero-measure"><span id="heroMeasure">第 1 小节</span><i></i><span id="heroBeat">1 / 4</span></div>
+              </div>
+              <div class="hero-window-foot">
+                <div class="mini-transport">
+                  <span class="mini-play"><svg viewBox="0 0 24 24"><path d="M8 5.5v13l10-6.5z"/></svg></span>
+                  <div class="mini-progress"><i></i></div>
+                  <span class="mini-time">0:00 / 0:48</span>
+                </div>
+                <span class="mini-hands"><i class="rh"></i>右手 <i class="lh"></i>左手</span>
+              </div>
+            </div>
+            <div class="floating-card floating-card-a">
+              <span class="fc-icon">♯</span>
+              <span><b>调号自动应用</b><small>升降号不再漏弹</small></span>
+            </div>
+            <div class="floating-card floating-card-b">
+              <span class="fc-icon">↔</span>
+              <span><b>左右手分色</b><small>声部一眼分清</small></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="trust-strip">
+          <span class="trust-item"><svg viewBox="0 0 24 24"><path d="M12 3 4.5 6v5.2c0 4.5 3 8.2 7.5 9.8 4.5-1.6 7.5-5.3 7.5-9.8V6L12 3Z"/><path d="m8.8 12 2.1 2.1 4.5-4.6"/></svg>识谱与声音全部在本机完成</span>
+          <span class="trust-item"><svg viewBox="0 0 24 24"><path d="M4 18V9m5 9V5m5 13v-6m5 6V8"/></svg>自动识别后可逐音校对</span>
+          <span class="trust-item"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>不需要注册，打开就能用</span>
+        </div>
+
+        <section class="home-section" id="recentSection" hidden>
+          <div class="section-head">
+            <div>
+              <span class="section-kicker">CONTINUE</span>
+              <h2>继续上次的练习</h2>
+            </div>
+            <button class="btn btn-quiet btn-small" id="btnClearRecent">清空记录</button>
+          </div>
+          <div class="recent-grid" id="recentGrid"></div>
+        </section>
+
+        <section class="home-section">
+          <div class="section-head">
+            <div>
+              <span class="section-kicker">PLAY FIRST</span>
+              <h2>没有谱子？先从示例开始</h2>
+            </div>
+            <p class="section-note">不用上传，直接感受跟弹</p>
+          </div>
+          <div class="demo-grid" id="demoGrid">
+            <button class="demo-card demo-twinkle" data-demo="twinkle">
+              <div class="demo-art"><span class="demo-num">01</span><span class="demo-glyph">✧</span><span class="demo-staff-lines"></span></div>
+              <div class="demo-info">
+                <span class="demo-level">入门 · 双手</span>
+                <h3>小星星</h3>
+                <p>法国民谣 · C 大调 · 4/4</p>
+                <span class="demo-go">载入跟弹 <svg viewBox="0 0 24 24"><path d="M4 12h15m0 0-5.5-5.5M19 12l-5.5 5.5"/></svg></span>
+              </div>
+            </button>
+            <button class="demo-card demo-ode" data-demo="ode">
+              <div class="demo-art"><span class="demo-num">02</span><span class="demo-glyph">♪</span><span class="demo-staff-lines"></span></div>
+              <div class="demo-info">
+                <span class="demo-level">入门 · 旋律</span>
+                <h3>欢乐颂</h3>
+                <p>贝多芬 · C 大调 · 4/4</p>
+                <span class="demo-go">载入跟弹 <svg viewBox="0 0 24 24"><path d="M4 12h15m0 0-5.5-5.5M19 12l-5.5 5.5"/></svg></span>
+              </div>
+            </button>
+            <button class="demo-card demo-canon" data-demo="canon">
+              <div class="demo-art"><span class="demo-num">03</span><span class="demo-glyph">♫</span><span class="demo-staff-lines"></span></div>
+              <div class="demo-info">
+                <span class="demo-level">进阶 · 双手</span>
+                <h3>卡农练习</h3>
+                <p>帕赫贝尔 · D 大调 · 4/4</p>
+                <span class="demo-go">载入跟弹 <svg viewBox="0 0 24 24"><path d="M4 12h15m0 0-5.5-5.5M19 12l-5.5 5.5"/></svg></span>
+              </div>
+            </button>
+          </div>
+        </section>
+
+        <section class="how-section">
+          <div class="how-head">
+            <span class="section-kicker">HOW IT WORKS</span>
+            <h2>从一张谱，到跟灯弹奏</h2>
+            <p>自动识谱是初稿，逐音校对让结果真正可信。</p>
+          </div>
+          <div class="how-grid">
+            <article class="how-card">
+              <span class="how-index">01</span>
+              <div class="how-icon"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 8h4M7 12h7M7 16h5"/><path d="m15 15 2 2 3-3"/></svg></div>
+              <h3>导入照片或文件</h3>
+              <p>拍摄五线谱、上传简谱，或直接导入 MusicXML / MIDI。支持自动裁切、倾斜校正。</p>
+            </article>
+            <article class="how-card">
+              <span class="how-index">02</span>
+              <div class="how-icon"><svg viewBox="0 0 24 24"><path d="M4 19V5m0 14h16"/><path d="M7 15V9m4 6V6m4 9v-4m4 4V8"/></svg></div>
+              <h3>对着原谱校对</h3>
+              <p>原谱与钢琴卷帘并排显示。拖动音符改音高，拉长改时值，点一下即可试听。</p>
+            </article>
+            <article class="how-card">
+              <span class="how-index">03</span>
+              <div class="how-icon"><svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 6v7m4-7v7m4-7v7m4-7v7"/></svg></div>
+              <h3>跟着琴键弹</h3>
+              <p>下落的音符直接对准琴键，按对时琴键发光。可调速度、循环小节、只看某只手。</p>
+            </article>
+          </div>
+        </section>
+
+        <footer class="home-footer">
+          <span>琴键跟弹 KEYLIGHT</span>
+          <p>识谱结果仅供练习参考，请以原谱为准。</p>
+          <button class="home-mobile-link" id="btnMobileHelp" type="button">iPhone / iPad 使用</button>
+        </footer>
+      </section>
+
+      <!-- ═══════════════ REVIEW ═══════════════ -->
+      <section class="view view-review" id="viewReview">
+        <header class="review-head">
+          <button class="btn btn-quiet btn-icon" id="btnReviewBack" aria-label="返回首页">
+            <svg viewBox="0 0 24 24"><path d="M19 12H5m0 0 6-6m-6 6 6 6"/></svg>
+          </button>
+          <div class="review-title-block">
+            <div class="review-kicker">STEP 02 · 校对音符</div>
+            <input class="title-input" id="scoreTitleInput" aria-label="曲名" maxlength="60">
+            <div class="review-meta" id="reviewMeta">—</div>
+          </div>
+          <div class="review-actions">
+            <div class="tempo-inline">
+              <label for="reviewTempo">速度</label>
+              <input id="reviewTempo" type="range" min="40" max="180" step="1" value="84">
+              <output id="reviewTempoOut">84</output>
+            </div>
+            <button class="btn btn-ghost btn-small" id="btnReviewListen">
+              <svg viewBox="0 0 24 24"><path d="M8 5.5v13l10-6.5z"/></svg>
+              试听
+            </button>
+            <button class="btn btn-primary" id="btnStartPlay">
+              开始跟弹
+              <svg viewBox="0 0 24 24"><path d="M4 12h15m0 0-5.5-5.5M19 12l-5.5 5.5"/></svg>
+            </button>
+          </div>
+        </header>
+
+        <div class="review-notice" id="reviewNotice">
+          <div class="notice-icon">!</div>
+          <div>
+            <b>自动识谱已完成，请重点核对。</b>
+            <span id="reviewNoticeText">识别出的音高与时值可能有偏差，完成校对后再开始跟弹。</span>
+          </div>
+          <button class="notice-close" id="btnDismissNotice" aria-label="关闭提示">×</button>
+        </div>
+
+        <div class="review-grid" id="reviewGrid">
+          <aside class="source-panel" id="sourcePanel">
+            <div class="panel-head">
+              <div>
+                <span class="panel-kicker">SOURCE</span>
+                <h2>原谱对照</h2>
+              </div>
+              <div class="zoom-actions">
+                <button class="icon-btn" id="btnZoomOut" aria-label="缩小">−</button>
+                <span id="zoomLabel">100%</span>
+                <button class="icon-btn" id="btnZoomIn" aria-label="放大">+</button>
+                <button class="icon-btn" id="btnZoomFit" aria-label="适应窗口">
+                  <svg viewBox="0 0 24 24"><path d="M8 3H3v5m13-5h5v5M8 21H3v-5m13 5h5v-5"/></svg>
+                </button>
+              </div>
+            </div>
+            <div class="source-viewport" id="sourceViewport">
+              <img id="sourceImage" alt="上传的原始琴谱" draggable="false">
+              <div class="source-empty" id="sourceEmpty">
+                <span class="source-empty-glyph">♬</span>
+                <b>这份琴谱没有图片</b>
+                <p>来自简谱文本、MusicXML 或 MIDI 导入。</p>
+              </div>
+              <div class="source-corner">拖动查看 · 滚轮缩放</div>
+            </div>
+            <div class="source-tip">
+              <span>小提示</span>
+              <p>选中右侧音符后，可按 ↑↓ 改音高；拖动音符边缘可改时值。</p>
+            </div>
+          </aside>
+
+          <section class="editor-panel">
+            <div class="editor-toolbar">
+              <div class="tool-group">
+                <button class="tool-btn" id="btnUndo" title="撤销 (Ctrl+Z)" aria-label="撤销">
+                  <svg viewBox="0 0 24 24"><path d="M9 7 4 12l5 5"/><path d="M4 12h9a5 5 0 0 1 5 5v1"/></svg>
+                </button>
+                <button class="tool-btn" id="btnRedo" title="重做 (Ctrl+Y)" aria-label="重做">
+                  <svg viewBox="0 0 24 24"><path d="m15 7 5 5-5 5"/><path d="M20 12h-9a5 5 0 0 0-5 5v1"/></svg>
+                </button>
+              </div>
+              <div class="tool-sep"></div>
+              <div class="tool-group hand-switch" role="group" aria-label="编辑声部">
+                <button class="hand-btn is-active" data-hand="R"><i class="rh"></i>右手</button>
+                <button class="hand-btn" data-hand="L"><i class="lh"></i>左手</button>
+              </div>
+              <div class="tool-sep"></div>
+              <div class="tool-group">
+                <label class="select-compact" title="新音符时值">
+                  <span>时值</span>
+                  <select id="newDuration">
+                    <option value="0.25">十六分</option>
+                    <option value="0.5">八分</option>
+                    <option value="1" selected>四分</option>
+                    <option value="2">二分</option>
+                    <option value="4">全音符</option>
+                    <option value="1.5">附点四分</option>
+                  </select>
+                </label>
+                <button class="tool-btn tool-btn-wide" id="btnQuantize" title="把音符起点吸附到十六分音符网格">
+                  <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h6"/></svg>
+                  吸附网格
+                </button>
+              </div>
+              <div class="tool-spacer"></div>
+              <div class="tool-group">
+                <button class="tool-btn tool-btn-wide" id="btnPlayRoll">
+                  <svg viewBox="0 0 24 24"><path d="M8 5.5v13l10-6.5z"/></svg>
+                  试听
+                </button>
+                <button class="tool-btn" id="btnDeleteNote" title="删除选中音符 (Delete)" aria-label="删除选中音符">
+                  <svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V5h6v2m-9 0 1 13h10l1-13M10 11v5m4-5v5"/></svg>
+                </button>
+              </div>
+            </div>
+            <div class="roll-wrap">
+              <canvas id="rollCanvas"></canvas>
+              <div class="roll-empty" id="rollEmpty" hidden>
+                <span>这里还没有音符</span>
+                <p>双击网格添加，或重新导入琴谱。</p>
+              </div>
+            </div>
+            <div class="editor-foot">
+              <div class="editor-hint" id="editorHint">
+                <span class="hint-dot"></span>
+                双击空白处添加音符 · 拖动改变音高与位置 · Delete 删除
+              </div>
+              <div class="inspector" id="inspector">
+                <span class="inspector-empty">未选中音符</span>
+              </div>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <!-- ═══════════════ PLAY ═══════════════ -->
+      <section class="view view-play" id="viewPlay">
+        <header class="play-head">
+          <div class="play-left">
+            <button class="btn btn-quiet btn-icon" id="btnPlayBack" aria-label="返回校对">
+              <svg viewBox="0 0 24 24"><path d="M19 12H5m0 0 6-6m-6 6 6 6"/></svg>
+            </button>
+            <div class="play-title">
+              <b id="playTitle">小星星</b>
+              <span id="playMeta">C 大调 · 4/4 · ♩=84</span>
+            </div>
+          </div>
+          <div class="play-toolbar">
+            <button class="pill-btn is-on" id="btnHands" title="切换左右手显示">
+              <span class="hand-pair"><i class="rh"></i><i class="lh"></i></span>
+              双手
+            </button>
+            <button class="pill-btn is-on" id="btnLabels" title="显示音名">
+              <svg viewBox="0 0 24 24"><path d="m5 8 7-4 7 4v8l-7 4-7-4z"/><path d="m5 8 7 4 7-4M12 12v8"/></svg>
+              音名
+            </button>
+            <button class="pill-btn" id="btnMetronome" title="节拍器">
+              <svg viewBox="0 0 24 24"><path d="M7 20h10L19 4H5z"/><path d="m12 14 4-6"/><path d="M9 16h6"/></svg>
+              节拍
+            </button>
+            <button class="pill-btn" id="btnLoop" title="循环当前小节">
+              <svg viewBox="0 0 24 24"><path d="M4 10V8a4 4 0 0 1 4-4h10m0 0-3-3m3 3-3 3"/><path d="M20 14v2a4 4 0 0 1-4 4H6m0 0 3 3m-3-3 3-3"/></svg>
+              循环
+            </button>
+            <span class="toolbar-sep"></span>
+            <label class="speed-control" title="播放速度">
+              <span id="speedLabel">0.8×</span>
+              <input id="speedRange" type="range" min="40" max="120" step="5" value="80">
+            </label>
+            <button class="pill-btn" id="btnSheetToggle" title="显示原谱">
+              <svg viewBox="0 0 24 24"><path d="M4 5.5C6.5 4 9.5 4 12 5.5 14.5 4 17.5 4 20 5.5V19c-2.5-1.5-5.5-1.5-8 0-2.5-1.5-5.5-1.5-8 0z"/><path d="M12 5.5V19"/></svg>
+              原谱
+            </button>
+            <button class="pill-btn btn-icon" id="btnFullscreen" title="全屏" aria-label="全屏">
+              <svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5m11-5v5h-5"/></svg>
+            </button>
+          </div>
+          <button class="btn btn-ghost btn-small play-edit" id="btnPlayEdit">回到校对</button>
+        </header>
+
+        <div class="play-note-banner" id="playNoteBanner">
+          <span class="nb-ear">LISTEN</span>
+          <b id="nbTitle">准备好后，按空格开始</b>
+          <span id="nbKeys">右手 0 个音 · 左手 0 个音</span>
+        </div>
+
+        <div class="stage" id="stage">
+          <canvas id="stageCanvas" aria-label="琴键跟弹视图"></canvas>
+          <div class="stage-top-hud">
+            <div class="measure-hud"><small id="measureLabel">第 1 小节</small><b id="beatLabel">1 · 2 · 3 · 4</b></div>
+            <div class="stage-legend"><span><i class="rh"></i>右手</span><span><i class="lh"></i>左手</span></div>
+          </div>
+          <div class="count-in" id="countIn" hidden><span id="countInNum">3</span></div>
+          <div class="stage-empty" id="stageEmpty" hidden>
+            <span>没有可显示的琴音</span>
+            <p>请回到校对页检查音符，或切回双手显示。</p>
+          </div>
+          <div class="sheet-pop" id="sheetPop" hidden>
+            <div class="sheet-pop-head"><span>原谱对照</span><button id="btnCloseSheet" aria-label="关闭">×</button></div>
+            <img id="playSheetImage" alt="原谱">
+            <div class="sheet-pop-empty" id="sheetPopEmpty">这份琴谱没有原图。</div>
+          </div>
+        </div>
+
+        <div class="transport">
+          <div class="transport-main">
+            <button class="transport-play" id="btnTransport" aria-label="播放">
+              <svg class="icon-play" viewBox="0 0 24 24"><path d="M8 5.5v13l10-6.5z"/></svg>
+              <svg class="icon-pause" viewBox="0 0 24 24"><path d="M8 5h3v14H8zM13 5h3v14h-3z"/></svg>
+            </button>
+            <button class="transport-pause" id="btnPause" type="button" aria-label="暂停">
+              <svg class="tp-icon tp-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l10-6.5z"/></svg>
+              <svg class="tp-icon tp-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5h3v14H8zM13 5h3v14h-3z"/></svg>
+              <span id="btnPauseText">播放</span>
+            </button>
+            <div class="transport-time">
+              <b id="timeCurrent">0:00</b>
+              <span id="timeTotal">0:48</span>
+            </div>
+            <div class="seek-wrap" id="seekWrap">
+              <div class="seek-track"><i id="seekFill"></i><span class="seek-thumb" id="seekThumb"></span></div>
+              <input type="range" id="seekRange" min="0" max="1000" value="0" step="1" aria-label="播放进度">
+            </div>
+            <button class="transport-tool" id="btnRestart" title="回到开头">
+              <svg viewBox="0 0 24 24"><path d="M5 5v14"/><path d="M19 5 9 12l10 7z"/></svg>
+            </button>
+          </div>
+          <div class="transport-hints">
+            <span><kbd>Space</kbd> 暂停 / 继续</span>
+            <span><kbd>P</kbd> 暂停</span>
+            <span><kbd>←</kbd><kbd>→</kbd> 跳转</span>
+            <span><kbd>L</kbd> 循环</span>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- ═══════════════ IMPORT DIALOG ═══════════════ -->
+  <dialog id="importDialog" class="modal">
+    <div class="modal-card modal-import">
+      <header class="modal-head">
+        <div>
+          <span class="modal-kicker">NEW SCORE</span>
+          <h2>导入一份新琴谱</h2>
+          <p>选择你最顺手的方式，下一步就能看到琴键。</p>
+        </div>
+        <button class="modal-close" id="btnCloseImport" aria-label="关闭">×</button>
+      </header>
+
+      <div class="import-tabs" role="tablist">
+        <button class="import-tab is-active" data-import-tab="image" role="tab">
+          <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="9" r="1.5"/><path d="m21 15-5-5L5 20"/></svg>
+          图片识谱
+        </button>
+        <button class="import-tab" data-import-tab="jianpu" role="tab">
+          <svg viewBox="0 0 24 24"><path d="M5 6h3v12H5zM10 6h4v8a2 2 0 1 0 2 2"/><path d="M5 9h14"/></svg>
+          简谱输入
+        </button>
+        <button class="import-tab" data-import-tab="file" role="tab">
+          <svg viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/></svg>
+          MusicXML / MIDI
+        </button>
+      </div>
+
+      <div class="import-content">
+        <div class="import-pane is-active" id="paneImage" data-pane="image">
+          <label class="dropzone" id="scoreDrop" for="scoreFile">
+            <input type="file" id="scoreFile" accept="image/*" hidden>
+            <div class="drop-empty" id="dropEmpty">
+              <div class="drop-icon">
+                <svg viewBox="0 0 24 24"><path d="M12 16V5m0 0L7.5 9.5M12 5l4.5 4.5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
+              </div>
+              <b>把琴谱照片拖到这里</b>
+              <span>或点击选择 · JPG / PNG / WebP / HEIC</span>
+              <small>手机拍摄也可以，尽量正对、光线均匀、谱面完整</small>
+            </div>
+            <div class="drop-preview" id="dropPreview" hidden>
+              <img id="scorePreview" alt="待识别琴谱">
+              <span class="preview-replace">点击更换图片</span>
+              <button class="preview-remove" id="btnRemoveImage" type="button" aria-label="移除图片">×</button>
+            </div>
+          </label>
+
+          <div class="image-options">
+            <label class="field">
+              <span>谱面类型</span>
+              <select id="scoreImageType">
+                <option value="staff">五线谱</option>
+                <option value="jianpu">简谱</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>调号</span>
+              <select id="imageKey">
+                <option value="0">C 大调 / a 小调</option>
+                <option value="1">G 大调（1♯）</option>
+                <option value="2">D 大调（2♯）</option>
+                <option value="3">A 大调（3♯）</option>
+                <option value="-1">F 大调（1♭）</option>
+                <option value="-2">B♭ 大调（2♭）</option>
+                <option value="-3">E♭ 大调（3♭）</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>拍号</span>
+              <select id="imageTime">
+                <option value="4/4">4 / 4</option>
+                <option value="3/4">3 / 4</option>
+                <option value="2/4">2 / 4</option>
+                <option value="6/8">6 / 8</option>
+              </select>
+            </label>
+            <label class="field field-tempo">
+              <span>速度 BPM</span>
+              <input type="number" id="imageTempo" min="40" max="200" value="84">
+            </label>
+          </div>
+
+          <div class="image-read-note" id="imageReadNote">
+            <span class="read-dot"></span>
+            <p><b>识谱方式：</b>五线谱在本机进行图像识别；简谱会调用 Windows 本地文字识别辅助提取数字，不会上传网络。</p>
+          </div>
+
+          <div class="import-progress" id="importProgress" hidden>
+            <div class="progress-head"><b id="progressTitle">正在读取谱面…</b><span id="progressPct">0%</span></div>
+            <div class="progress-bar"><i id="progressFill"></i></div>
+            <div class="progress-steps" id="progressSteps"></div>
+          </div>
+        </div>
+
+        <div class="import-pane" id="paneJianpu" data-pane="jianpu">
+          <div class="jianpu-topline">
+            <label class="field"><span>调号</span>
+              <select id="jianpuKey">
+                <option value="C">1 = C</option><option value="G">1 = G</option><option value="D">1 = D</option>
+                <option value="A">1 = A</option><option value="F">1 = F</option><option value="Bb">1 = B♭</option>
+                <option value="Eb">1 = E♭</option>
+              </select>
+            </label>
+            <label class="field"><span>拍号</span>
+              <select id="jianpuTime">
+                <option value="4/4">4 / 4</option><option value="3/4">3 / 4</option><option value="2/4">2 / 4</option><option value="6/8">6 / 8</option>
+              </select>
+            </label>
+            <label class="field field-tempo"><span>速度 BPM</span><input type="number" id="jianpuTempo" min="40" max="200" value="84"></label>
+            <button class="text-btn" id="btnJianpuExample" type="button">填入示例</button>
+          </div>
+          <div class="jianpu-two">
+            <label class="jianpu-box">
+              <span class="jianpu-label"><i class="rh"></i>右手旋律 <small>高音 / 主旋律</small></span>
+              <textarea id="jianpuRight" spellcheck="false" placeholder="1 1 5 5 | 6 6 5 - | 4 4 3 3 | 2 2 1 -"></textarea>
+            </label>
+            <label class="jianpu-box">
+              <span class="jianpu-label"><i class="lh"></i>左手伴奏 <small>可留空</small></span>
+              <textarea id="jianpuLeft" spellcheck="false" placeholder="1, 5, | 4, 1, | 1, 5, | 5, 1,"></textarea>
+            </label>
+          </div>
+          <div class="jianpu-syntax">
+            <b>写法说明</b>
+            <span><code>1</code>~<code>7</code> 音级</span>
+            <span><code>0</code> 休止</span>
+            <span><code>1'</code> 高八度</span>
+            <span><code>1,</code> 低八度</span>
+            <span><code>1_</code> 八分音符</span>
+            <span><code>1.</code> 附点</span>
+            <span><code>-</code> 延长一拍</span>
+            <span><code>|</code> 小节线</span>
+          </div>
+          <div class="jianpu-live" id="jianpuLive"><span></span>还没有输入音符</div>
+        </div>
+
+        <div class="import-pane" id="paneFile" data-pane="file">
+          <label class="dropzone dropzone-file" id="fileDrop" for="fileInput">
+            <input type="file" id="fileInput" accept=".musicxml,.xml,.mid,.midi" hidden>
+            <div class="drop-icon">
+              <svg viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/><path d="M9 14h6m-6 3h4"/></svg>
+            </div>
+            <b>选择 MusicXML 或 MIDI 文件</b>
+            <span>.musicxml · .xml · .mid · .midi</span>
+            <small>这些格式本身就是数字乐谱，导入后音高与节奏最准确</small>
+          </label>
+          <div class="file-picked" id="filePicked" hidden>
+            <span class="file-icon">♪</span>
+            <div><b id="fileName">—</b><small id="fileMeta">—</small></div>
+            <button class="text-btn" id="btnRemoveFile" type="button">移除</button>
+          </div>
+          <div class="format-hints">
+            <div><b>MusicXML</b><p>优先支持未压缩的 .musicxml / .xml。西贝柳斯、MuseScore、Finale 均可导出。</p></div>
+            <div><b>MIDI</b><p>导入后会按音轨和音高自动分左右手，可在校对页调整。</p></div>
+          </div>
+        </div>
+      </div>
+
+      <footer class="modal-foot">
+        <button class="btn btn-quiet" id="btnCancelImport">取消</button>
+        <div class="foot-note" id="importFootNote">支持自动倾斜校正与谱线分析</div>
+        <button class="btn btn-primary" id="btnDoImport">
+          开始识谱
+          <svg viewBox="0 0 24 24"><path d="M4 12h15m0 0-5.5-5.5M19 12l-5.5 5.5"/></svg>
+        </button>
+      </footer>
+    </div>
+  </dialog>
+
+  <!-- ═══════════════ HELP DIALOG ═══════════════ -->
+  <dialog id="helpDialog" class="modal modal-help">
+    <div class="modal-card">
+      <header class="modal-head">
+        <div><span class="modal-kicker">QUICK GUIDE</span><h2>怎么用琴键跟弹</h2></div>
+        <button class="modal-close" id="btnCloseHelp" aria-label="关闭">×</button>
+      </header>
+      <div class="help-body">
+        <ol class="help-steps">
+          <li><span>1</span><div><b>导入一张琴谱</b><p>拍清楚五线谱，或直接输入简谱；有 MusicXML / MIDI 时优先使用文件，音高与节奏最准确。</p></div></li>
+          <li><span>2</span><div><b>校对自动识谱结果</b><p>左侧看原谱、右侧看钢琴卷帘。点击音符可试听；上下拖动改音高，左右拖动改位置，拖右边缘改时值。</p></div></li>
+          <li><span>3</span><div><b>跟着发光的琴键弹</b><p>音符会从上方落到对应琴键，落到底部时按下。可调速度、只看右手/左手、循环一小节反复练。</p></div></li>
+        </ol>
+        <div class="help-note">
+          <b>关于识别准确度</b>
+          <p>五线谱自动识别面向清晰的印刷谱，复杂和弦、装饰音与连音可能不准确；简谱和文件导入更可靠。你可以逐音校对，校对后的结果会保存在本机。</p>
+        </div>
+        <div class="kbd-guide">
+          <span><kbd>空格</kbd> 暂停 / 继续</span>
+          <span><kbd>P</kbd> 暂停</span>
+          <span><kbd>↑</kbd><kbd>↓</kbd> 改音高</span>
+          <span><kbd>←</kbd><kbd>→</kbd> 改位置</span>
+          <span><kbd>Delete</kbd> 删除音符</span>
+          <span><kbd>Ctrl</kbd> + <kbd>Z</kbd> 撤销</span>
+        </div>
+        <div class="help-mobile">
+          <div class="help-mobile-head">
+            <b>在 iPhone / iPad 上使用</b>
+            <span>HOME SCREEN APP</span>
+          </div>
+          <p>让手机 / 平板和这台电脑连同一个 Wi-Fi，然后在 Safari 打开下面的地址：</p>
+          <div class="mobile-url-row">
+            <code id="mobileUrl">正在获取局域网地址…</code>
+            <button class="text-btn" id="btnCopyMobileUrl" type="button">复制</button>
+          </div>
+          <ol class="mobile-steps">
+            <li>点 Safari 底部的「分享」按钮</li>
+            <li>选择「添加到主屏幕」</li>
+            <li>以后从主屏幕图标打开，就是全屏独立窗口</li>
+          </ol>
+          <p class="mobile-note">这个版本是可安装的主屏幕 App。电脑上的本地服务需要保持开启；识别和音频仍在这台电脑 / 设备本地完成。</p>
+        </div>
+      </div>
+      <footer class="modal-foot"><button class="btn btn-primary" id="btnHelpOk">知道了</button></footer>
+    </div>
+  </dialog>
+
+  <!-- ═══════════════ CONFIRM DIALOG ═══════════════ -->
+  <dialog id="confirmDialog" class="modal modal-confirm">
+    <div class="modal-card">
+      <h2 id="confirmTitle">确认操作</h2>
+      <p id="confirmText">—</p>
+      <footer class="modal-foot">
+        <button class="btn btn-quiet" id="btnConfirmCancel">取消</button>
+        <button class="btn btn-primary" id="btnConfirmOk">确认</button>
+      </footer>
+    </div>
+  </dialog>
+
+  <div class="ios-install-tip" id="iosInstallTip" hidden>
+    <div class="ios-install-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><path d="M12 16V4m0 0L8 8m4-4 4 4"/><path d="M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/></svg>
+    </div>
+    <div class="ios-install-copy">
+      <b>把「琴键跟弹」放到主屏幕</b>
+      <p>在 Safari 点「分享」→「添加到主屏幕」，以后全屏打开。</p>
+    </div>
+    <button class="ios-install-close" id="btnDismissIosTip" aria-label="关闭提示">×</button>
+  </div>
+
+  <div class="toast-stack" id="toastStack" aria-live="polite"></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
