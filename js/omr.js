@@ -163,7 +163,7 @@ function rowRuns(binary, w, h) {
   return { runCount, all };
 }
 
-function findStaves(binary, w, h, { peakThreshold = 0.1, groupThreshold = 0.065 } = {}) {
+function findStaves(binary, w, h, { peakThreshold = 0.1, groupThreshold = 0.16 } = {}) {
   const { runCount, all } = rowRuns(binary, w, h);
   const contentWidth = Math.max(1, Math.max(...all) * 0.92);
   const scores = new Float32Array(h);
@@ -177,8 +177,12 @@ function findStaves(binary, w, h, { peakThreshold = 0.1, groupThreshold = 0.065 
     if (scores[y] < peakThreshold) continue;
     if (scores[y] >= scores[y - 1] && scores[y] >= scores[y + 1]) {
       let sy = y * scores[y], sw = scores[y], start = y, end = y;
-      while (start > 0 && scores[start - 1] > groupThreshold) { start--; sy += start * scores[start]; sw += scores[start]; }
-      while (end < h - 1 && scores[end + 1] > groupThreshold) { end++; sy += end * scores[end]; sw += scores[end]; }
+      // Adjacent rows from dense beams can sit above the absolute group
+      // threshold and swallow a whole staff line. Group only rows that are
+      // comparable to this local maximum instead.
+      const groupCut = Math.max(groupThreshold, scores[y] * 0.72);
+      while (start > 0 && scores[start - 1] > groupCut) { start--; sy += start * scores[start]; sw += scores[start]; }
+      while (end < h - 1 && scores[end + 1] > groupCut) { end++; sy += end * scores[end]; sw += scores[end]; }
       const thickness = end - start + 1;
       if (thickness <= 7) peaks.push({ y: sy / sw, score: scores[y], thickness, start, end });
       y = end;
@@ -207,7 +211,7 @@ function findStaves(binary, w, h, { peakThreshold = 0.1, groupThreshold = 0.065 
   peaks.sort((a, b) => a.y - b.y);
 
   const maxSpace = Math.max(6, Math.min(40, Math.round(h * 0.02)));
-  const candidates = [];
+  let candidates = [];
   for (let i = 0; i < peaks.length; i++) {
     for (let s = 5; s <= maxSpace; s++) {
       const chain = [i];
@@ -242,12 +246,20 @@ function findStaves(binary, w, h, { peakThreshold = 0.1, groupThreshold = 0.065 
       }
     }
   }
-  // Keep the strongest candidate for each physical staff. This avoids losing a
-  // real staff merely because a weaker, overlapping chain claimed its peaks.
+  // All staves on one page normally share the same engraved staff spacing.
+  // Dense beams and ledger lines can form convincing false five-line chains
+  // with a visibly different spacing. Anchor on the highest-scoring candidates
+  // (true staff lines are long, continuous rows) and reject the outliers.
   candidates.sort((a, b) => b.score - a.score);
+  if (candidates.length > 1) {
+    const anchor = candidates.slice(0, Math.min(12, candidates.length));
+    const spaces = anchor.map((c) => c.space).sort((a, b) => a - b);
+    const medianSpace = spaces[Math.floor(spaces.length / 2)];
+    candidates = candidates.filter((c) => Math.abs(c.space - medianSpace) <= Math.max(1.5, medianSpace * 0.14));
+  }
   const selected = [];
   for (const candidate of candidates) {
-    if (selected.some((st) => Math.abs(st.top - candidate.top) < Math.max(st.space, candidate.space) * 2.4)) continue;
+    if (selected.some((st) => Math.abs(st.top - candidate.top) < Math.max(st.space, candidate.space) * 3.4)) continue;
     selected.push(candidate);
   }
   selected.sort((a, b) => a.top - b.top);
@@ -747,7 +759,7 @@ export async function recognizeStaffImage(source, options = {}, onProgress = () 
   progress(20, "校正谱面倾斜", "deskew");
   const skew = estimateSkew(binary, w, h);
   let usedSkew = 0;
-  if (Math.abs(skew) >= 0.22 && Math.abs(skew) <= 3.2) {
+  if (options.deskew !== false && Math.abs(skew) >= 0.22 && Math.abs(skew) <= 3.2) {
     const rotated = makeCanvas(w, h);
     const rctx = rotated.getContext("2d", { willReadFrequently: true });
     rctx.fillStyle = "#ffffff";
@@ -769,7 +781,7 @@ export async function recognizeStaffImage(source, options = {}, onProgress = () 
   // Dense or faint scores can fall below the normal projection threshold.
   // Retry once with a more sensitive peak picker before giving up.
   if (!staffResult.staves.length) {
-    staffResult = findStaves(binary, w, h, { peakThreshold: 0.06, groupThreshold: 0.042 });
+    staffResult = findStaves(binary, w, h, { peakThreshold: 0.06, groupThreshold: 0.12 });
     staffFallback = staffResult.staves.length > 0;
   }
   const { staves } = staffResult;
@@ -838,7 +850,8 @@ export async function recognizeStaffImage(source, options = {}, onProgress = () 
       staves: staves.map((s) => ({ top: s.top, bottom: s.bottom, x0: s.x0, x1: s.x1, space: s.space, clef: s.clef })),
       noteheads: heads.map((hd) => ({ x: hd.x, y: hd.y, midi: hd.midi, hand: hd.hand, confidence: hd.confidence })),
       boundaries: barSystems.map((b) => b.boundaries),
-      skew: usedSkew,
+      skew,
+      usedSkew,
       peaks: staffResult.peaks,
       candidates: staffResult.candidates,
     },
