@@ -2,7 +2,7 @@
    Registered only on HTTPS; the local LAN version still installs to the iOS
    home screen, but iOS does not allow service workers over plain HTTP. */
 
-const CACHE = "keylight-shell-v3";
+const CACHE = "keylight-shell-v4";
 const SHELL = [
   "./",
   "./index.html",
@@ -24,10 +24,18 @@ const SHELL = [
   "./assets/favicon-64.png",
 ];
 
+// PDF.js is only needed after a PDF is chosen. Cache it separately so a
+// missing/updated vendor file can never break installation of the app shell.
+const PDF_SHELL = [
+  "./js/vendor/pdf.min.js",
+  "./js/vendor/pdf.worker.min.js",
+];
+
 self.addEventListener("install", (event) => {
   event.waitUntil(
     caches.open(CACHE)
-      .then((cache) => cache.addAll(SHELL))
+      .then((cache) => cache.addAll(SHELL)
+        .then(() => Promise.all(PDF_SHELL.map((url) => cache.add(url).catch(() => undefined)))))
       .then(() => self.skipWaiting())
       .catch(() => undefined)
   );

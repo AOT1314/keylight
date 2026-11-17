@@ -118,7 +118,7 @@
             </div>
             <div class="format-row reveal reveal-5">
               <span>支持</span>
-              <b>五线谱照片</b><i></i><b>简谱</b><i></i><b>MusicXML</b><i></i><b>MIDI</b>
+              <b>五线谱照片</b><i></i><b>PDF</b><i></i><b>简谱</b><i></i><b>MusicXML</b><i></i><b>MIDI</b>
             </div>
           </div>
 
@@ -514,14 +514,14 @@
       <div class="import-content">
         <div class="import-pane is-active" id="paneImage" data-pane="image">
           <label class="dropzone" id="scoreDrop" for="scoreFile">
-            <input type="file" id="scoreFile" accept="image/*" hidden>
+            <input type="file" id="scoreFile" accept="image/*,.pdf,application/pdf" hidden>
             <div class="drop-empty" id="dropEmpty">
               <div class="drop-icon">
                 <svg viewBox="0 0 24 24"><path d="M12 16V5m0 0L7.5 9.5M12 5l4.5 4.5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
               </div>
-              <b>把琴谱照片拖到这里</b>
-              <span>或点击选择 · JPG / PNG / WebP / HEIC</span>
-              <small>手机拍摄也可以，尽量正对、光线均匀、谱面完整</small>
+              <b>把琴谱照片或 PDF 拖到这里</b>
+              <span>或点击选择 · JPG / PNG / WebP / HEIC / PDF</span>
+              <small>PDF 会先转成清晰图片再识别；可选择第几页</small>
             </div>
             <div class="drop-preview" id="dropPreview" hidden>
               <img id="scorePreview" alt="待识别琴谱">
@@ -529,6 +529,8 @@
               <button class="preview-remove" id="btnRemoveImage" type="button" aria-label="移除图片">×</button>
             </div>
           </label>
+
+          <div class="pdf-hint" id="pdfHint" hidden></div>
 
           <div class="image-options">
             <label class="field">
@@ -563,11 +565,15 @@
               <span>速度 BPM</span>
               <input type="number" id="imageTempo" min="40" max="200" value="84">
             </label>
+            <label class="field" id="pdfPageField" hidden>
+              <span>PDF 页码</span>
+              <input type="number" id="pdfPageInput" min="1" value="1" step="1" inputmode="numeric" aria-label="PDF 页码">
+            </label>
           </div>
 
           <div class="image-read-note" id="imageReadNote">
             <span class="read-dot"></span>
-            <p><b>识谱方式：</b>五线谱在本机进行图像识别；简谱会调用 Windows 本地文字识别辅助提取数字，不会上传网络。</p>
+            <p><b>识谱方式：</b>五线谱和 PDF 在本机转成图片后识别；简谱图片会调用 Windows 本地文字识别辅助提取数字，不会上传网络。</p>
           </div>
 
           <div class="import-progress" id="importProgress" hidden>

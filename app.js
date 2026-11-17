@@ -29,6 +29,10 @@ const state = {
   sourceName: "",
   pendingImage: null,
   pendingFile: null,
+  pendingPdfDoc: null,
+  pendingPdfFile: null,
+  pendingPdfPageCount: 0,
+  pendingPdfPage: 1,
   pendingTitle: "",
   importTab: "image",
   importBusy: false,
@@ -54,6 +58,8 @@ let saveTimer = 0;
 let confirmResolver = null;
 let liveTimer = 0;
 let wakeLock = null;
+let pdfJsPromise = null;
+let pdfRenderSeq = 0;
 
 async function keepScreenAwake(on) {
   if (!("wakeLock" in navigator)) return;
@@ -316,6 +322,7 @@ function resetImportDialog() {
   state.pendingTitle = "";
   state.recognitionDebug = null;
   state.jianpuFromImage = false;
+  clearPdfState();
   dom.scoreFile.value = "";
   dom.fileInput.value = "";
   dom.dropEmpty.hidden = false;
@@ -398,10 +405,166 @@ function updateProgress({ pct = 0, label = "", step = "" }) {
   });
 }
 
+function isPdfFile(file) {
+  return !!file && (file.type === "application/pdf" || /\.pdf$/i.test(file.name || ""));
+}
+
+function hidePdfUi() {
+  if (!dom.pdfHint) return;
+  dom.pdfHint.hidden = true;
+  dom.pdfHint.textContent = "";
+  dom.pdfHint.classList.remove("is-error");
+  if (dom.pdfPageField) dom.pdfPageField.hidden = true;
+  if (dom.pdfPageInput) {
+    dom.pdfPageInput.value = "1";
+    dom.pdfPageInput.removeAttribute("max");
+  }
+}
+
+function clearPdfState() {
+  if (state.pendingPdfDoc?.destroy) {
+    try { state.pendingPdfDoc.destroy(); } catch { /* worker already gone */ }
+  }
+  state.pendingPdfDoc = null;
+  state.pendingPdfFile = null;
+  state.pendingPdfPageCount = 0;
+  state.pendingPdfPage = 1;
+  hidePdfUi();
+}
+
+async function loadPdfJs() {
+  if (window.pdfjsLib) return window.pdfjsLib;
+  if (!pdfJsPromise) {
+    pdfJsPromise = new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = new URL("./js/vendor/pdf.min.js", import.meta.url).href;
+      script.async = true;
+      script.onload = () => {
+        if (!window.pdfjsLib) {
+          reject(new Error("PDF 组件没有加载成功"));
+          return;
+        }
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+          new URL("./js/vendor/pdf.worker.min.js", import.meta.url).href;
+        resolve(window.pdfjsLib);
+      };
+      script.onerror = () => reject(new Error("PDF 组件加载失败，请检查网络后重试"));
+      document.head.appendChild(script);
+    }).catch((err) => {
+      pdfJsPromise = null;
+      throw err;
+    });
+  }
+  return pdfJsPromise;
+}
+
+async function renderPdfPage(pageNumber, { manageBusy = true } = {}) {
+  if (!state.pendingPdfDoc) return;
+  const total = state.pendingPdfPageCount || state.pendingPdfDoc.numPages || 1;
+  const n = clamp(Math.round(Number(pageNumber) || 1), 1, total);
+  const seq = ++pdfRenderSeq;
+  if (manageBusy) setImportBusy(true, `正在渲染 PDF 第 ${n} 页…`);
+  dom.pdfHint.hidden = false;
+  dom.pdfHint.classList.remove("is-error");
+  dom.pdfHint.innerHTML = `<b>正在渲染 PDF 第 ${n} / ${total} 页…</b>`;
+  try {
+    const page = await state.pendingPdfDoc.getPage(n);
+    const base = page.getViewport({ scale: 1 });
+    let scale = Math.min(4, 2200 / Math.max(1, base.width));
+    if (base.width * scale * base.height * scale > 9_000_000) {
+      scale = Math.sqrt(9_000_000 / Math.max(1, base.width * base.height));
+    }
+    scale = clamp(scale, 0.5, 4);
+    const viewport = page.getViewport({ scale });
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.ceil(viewport.width));
+    canvas.height = Math.max(1, Math.ceil(viewport.height));
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    await page.render({ canvasContext: ctx, viewport }).promise;
+    if (seq !== pdfRenderSeq) return;
+    const blob = await new Promise((resolve, reject) => {
+      canvas.toBlob((value) => value ? resolve(value) : reject(new Error("PDF 页面转换失败")), "image/jpeg", 0.9);
+    });
+    if (seq !== pdfRenderSeq) return;
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
+    const originalName = state.pendingPdfFile?.name || "琴谱.pdf";
+    const imageName = `${originalName.replace(/\.pdf$/i, "")}-第${n}页.jpg`;
+    const imageFile = new File([blob], imageName, { type: "image/jpeg", lastModified: Date.now() });
+    state.pendingPdfPage = n;
+    state.pendingImage = { file: imageFile, dataUrl, name: imageName, pdfPage: n };
+    state.pendingTitle = titleFromFilename(originalName) || "PDF 琴谱";
+    dom.scorePreview.src = dataUrl;
+    dom.dropEmpty.hidden = true;
+    dom.dropPreview.hidden = false;
+    dom.importProgress.hidden = true;
+    dom.pdfPageInput.value = String(n);
+    dom.pdfPageField.hidden = false;
+    dom.pdfHint.innerHTML = `<b>PDF 第 ${n} / ${total} 页已转成图片。</b> 可修改上方页码；多页 PDF 请逐页导入识别。`;
+  } catch (err) {
+    if (seq !== pdfRenderSeq) return;
+    dom.pdfHint.hidden = false;
+    dom.pdfHint.classList.add("is-error");
+    dom.pdfHint.textContent = err?.message || "PDF 页面渲染失败，请换一个 PDF。";
+    toast(err?.message || "PDF 页面渲染失败", "error", 4800);
+  } finally {
+    if (manageBusy) setImportBusy(false);
+  }
+}
+
+async function handlePdfFile(file) {
+  if (state.importBusy) return;
+  if (file.size > 50 * 1024 * 1024) {
+    toast("PDF 有点大，请压缩到 50MB 以内。", "error");
+    return;
+  }
+  clearPdfState();
+  dom.pdfHint.hidden = false;
+  dom.pdfHint.classList.remove("is-error");
+  dom.pdfHint.innerHTML = "<b>正在读取 PDF…</b>";
+  setImportBusy(true, "正在读取 PDF…");
+  try {
+    const pdfjs = await loadPdfJs();
+    const data = await file.arrayBuffer();
+    const doc = await pdfjs.getDocument({ data, useSystemFonts: true }).promise;
+    state.pendingPdfDoc = doc;
+    state.pendingPdfFile = file;
+    state.pendingPdfPageCount = doc.numPages;
+    state.pendingPdfPage = 1;
+    dom.pdfPageInput.max = String(doc.numPages);
+    dom.pdfPageInput.value = "1";
+    dom.pdfPageField.hidden = false;
+    await renderPdfPage(1, { manageBusy: false });
+  } catch (err) {
+    clearPendingImage();
+    dom.pdfHint.hidden = false;
+    dom.pdfHint.classList.add("is-error");
+    dom.pdfHint.textContent = err?.name === "PasswordException"
+      ? "这个 PDF 有密码，暂时无法读取。请先解除密码后再上传。"
+      : (err?.message || "PDF 读取失败，请换一个文件。");
+    toast(dom.pdfHint.textContent, "error", 5200);
+  } finally {
+    setImportBusy(false);
+  }
+}
+
+async function handlePdfPageChange() {
+  if (!state.pendingPdfDoc || state.importBusy) return;
+  const n = clamp(Math.round(Number(dom.pdfPageInput.value) || 1), 1, state.pendingPdfPageCount || 1);
+  dom.pdfPageInput.value = String(n);
+  await renderPdfPage(n);
+}
+
 async function handleImageFile(file) {
   if (!file) return;
+  if (isPdfFile(file)) {
+    await handlePdfFile(file);
+    return;
+  }
+  clearPdfState();
   if (!file.type.startsWith("image/")) {
-    toast("请选择 PNG、JPG、WebP 或 BMP 图片。", "error");
+    toast("请选择 PNG、JPG、WebP、HEIC 或 PDF 文件。", "error");
     return;
   }
   if (file.size > 20 * 1024 * 1024) {
@@ -422,6 +585,7 @@ async function handleImageFile(file) {
 }
 
 function clearPendingImage() {
+  clearPdfState();
   state.pendingImage = null;
   dom.scorePreview.removeAttribute("src");
   dom.dropEmpty.hidden = false;
@@ -1019,6 +1183,7 @@ function cacheDom() {
     "timeCurrent", "timeTotal", "seekFill",
     "seekThumb", "seekRange", "btnRestart", "scoreDrop", "scoreFile", "dropEmpty", "dropPreview",
     "scorePreview", "btnRemoveImage", "scoreImageType", "imageKey", "imageTime", "imageTempo",
+    "pdfPageField", "pdfPageInput", "pdfHint",
     "imageReadNote", "importProgress", "progressTitle", "progressPct", "progressFill",
     "progressSteps", "jianpuKey", "jianpuTime", "jianpuTempo", "btnJianpuExample", "jianpuRight",
     "jianpuLeft", "jianpuLive", "fileDrop", "fileInput", "filePicked", "fileName", "fileMeta",
@@ -1105,6 +1270,7 @@ function bindEvents() {
     clearPendingImage();
   });
   dom.scoreImageType.addEventListener("change", updateImportFooter);
+  dom.pdfPageInput.addEventListener("change", handlePdfPageChange);
   dom.fileInput.addEventListener("change", () => handleImportFile(dom.fileInput.files[0]));
   dom.fileDrop.addEventListener("dragover", (e) => { e.preventDefault(); dom.fileDrop.classList.add("is-drag"); });
   dom.fileDrop.addEventListener("dragleave", () => dom.fileDrop.classList.remove("is-drag"));
@@ -1441,11 +1607,12 @@ async function checkOcrHealth() {
     // mode still work; only the Windows-powered jianpu OCR is unavailable.
     state.staticMode = true;
     const hosted = location.protocol === "https:";
-    dom.mobileUrl.textContent = hosted ? "在线版已部署" : "未连接到本地服务";
-    dom.btnCopyMobileUrl.disabled = true;
+    const staticUrl = `${location.origin}${location.pathname}`;
+    dom.mobileUrl.textContent = hosted ? staticUrl : "未连接到本地服务";
+    dom.btnCopyMobileUrl.disabled = !hosted;
     dom.imageReadNote.innerHTML = hosted
-      ? `<span class="read-dot"></span><p><b>在线离线版：</b>简谱图片 OCR 需要 Windows 电脑，本版本不支持；请使用「简谱输入」。五线谱图片识别、文本/MIDI 导入和跟弹仍可正常使用。</p>`
-      : `<span class="read-dot"></span><p><b>简谱 OCR 需要本地服务：</b>请通过 <code>启动琴谱工坊.bat</code> 打开应用。五线谱识谱和文本输入仍然可用。</p>`;
+      ? `<span class="read-dot"></span><p><b>在线离线版：</b>简谱图片 OCR 需要 Windows 电脑，本版本不支持；请使用「简谱输入」。五线谱、PDF 图片识别、文本/MIDI 导入和跟弹仍可正常使用。</p>`
+      : `<span class="read-dot"></span><p><b>简谱 OCR 需要本地服务：</b>请通过 <code>启动琴谱工坊.bat</code> 打开应用。五线谱、PDF 和文本输入仍然可用。</p>`;
     const jianpuOption = dom.scoreImageType?.querySelector('option[value="jianpu"]');
     if (jianpuOption) {
       jianpuOption.disabled = true;
@@ -1454,6 +1621,12 @@ async function checkOcrHealth() {
     if (dom.scoreImageType?.value === "jianpu") {
       dom.scoreImageType.value = "staff";
       updateImportFooter();
+    }
+    const helpLead = document.querySelector(".help-mobile > p");
+    if (helpLead) {
+      helpLead.textContent = hosted
+        ? "在手机 / 平板的 Safari 打开下面的在线地址；这个版本不需要电脑："
+        : "让手机 / 平板和这台电脑连同一个 Wi-Fi，然后在 Safari 打开下面的地址：";
     }
     const helpNote = document.querySelector(".help-mobile .mobile-note");
     if (helpNote) {

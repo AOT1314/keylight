@@ -129,7 +129,7 @@ export function escapeHtml(str) {
 }
 
 export function titleFromFilename(name = "未命名琴谱") {
-  return name.replace(/\.(png|jpe?g|webp|bmp|musicxml|xml|midi?|mxl)$/i, "").replace(/[_-]+/g, " ").trim() || "未命名琴谱";
+  return name.replace(/\.(png|jpe?g|webp|bmp|pdf|musicxml|xml|midi?|mxl)$/i, "").replace(/[_-]+/g, " ").trim() || "未命名琴谱";
 }
 
 export function isTypingTarget(el) {
