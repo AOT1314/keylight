@@ -163,7 +163,7 @@ function rowRuns(binary, w, h) {
   return { runCount, all };
 }
 
-function findStaves(binary, w, h) {
+function findStaves(binary, w, h, { peakThreshold = 0.1, groupThreshold = 0.065 } = {}) {
   const { runCount, all } = rowRuns(binary, w, h);
   const contentWidth = Math.max(1, Math.max(...all) * 0.92);
   const scores = new Float32Array(h);
@@ -174,11 +174,11 @@ function findStaves(binary, w, h) {
   // Group adjacent rows into peaks.
   const peaks = [];
   for (let y = 1; y < h - 1; y++) {
-    if (scores[y] < 0.1) continue;
+    if (scores[y] < peakThreshold) continue;
     if (scores[y] >= scores[y - 1] && scores[y] >= scores[y + 1]) {
       let sy = y * scores[y], sw = scores[y], start = y, end = y;
-      while (start > 0 && scores[start - 1] > 0.065) { start--; sy += start * scores[start]; sw += scores[start]; }
-      while (end < h - 1 && scores[end + 1] > 0.065) { end++; sy += end * scores[end]; sw += scores[end]; }
+      while (start > 0 && scores[start - 1] > groupThreshold) { start--; sy += start * scores[start]; sw += scores[start]; }
+      while (end < h - 1 && scores[end + 1] > groupThreshold) { end++; sy += end * scores[end]; sw += scores[end]; }
       const thickness = end - start + 1;
       if (thickness <= 7) peaks.push({ y: sy / sw, score: scores[y], thickness, start, end });
       y = end;
@@ -764,7 +764,14 @@ export async function recognizeStaffImage(source, options = {}, onProgress = () 
 
   await yieldUI();
   progress(32, "定位五线谱表", "staff");
-  const staffResult = findStaves(binary, w, h);
+  let staffResult = findStaves(binary, w, h);
+  let staffFallback = false;
+  // Dense or faint scores can fall below the normal projection threshold.
+  // Retry once with a more sensitive peak picker before giving up.
+  if (!staffResult.staves.length) {
+    staffResult = findStaves(binary, w, h, { peakThreshold: 0.06, groupThreshold: 0.042 });
+    staffFallback = staffResult.staves.length > 0;
+  }
   const { staves } = staffResult;
   if (!staves.length) {
     throw new Error("没有找到完整的五线谱表。整页密集钢琴谱请尝试把每 1–2 行谱表裁成单独图片，或导出更高分辨率；复杂谱建议改用 MusicXML / MIDI。");
@@ -806,6 +813,7 @@ export async function recognizeStaffImage(source, options = {}, onProgress = () 
     "节奏是根据音符横向间距估算的，切分、附点与休止符建议逐小节校对。",
     systems.length > 1 ? `按 ${systems.length} 行谱表合并为 ${assembled.measures} 个小节。` : "左右手按上下谱表分配，可在编辑器中修改。",
   ];
+  if (staffFallback) warnings.unshift("谱线较浅或较密，已用更敏感的谱表检测重试；请重点核对漏音和错行。");
   if (Math.abs(usedSkew) > 1.4) warnings.unshift(`谱面倾斜 ${Math.abs(usedSkew).toFixed(1)}°，已自动旋转，建议检查边缘音符。`);
   if (staves.length === 1) warnings.push("只检测到一行谱表，已默认使用高音谱号；如为低音谱表，请在编辑器中调整音高。");
   progress(100, "识谱完成", "done");

@@ -458,7 +458,7 @@ async function loadPdfJs() {
   return pdfJsPromise;
 }
 
-async function renderPdfPage(pageNumber, { manageBusy = true } = {}) {
+async function renderPdfPage(pageNumber, { manageBusy = true, targetWidth = 2200, hideProgress = true } = {}) {
   if (!state.pendingPdfDoc) return;
   const total = state.pendingPdfPageCount || state.pendingPdfDoc.numPages || 1;
   const n = clamp(Math.round(Number(pageNumber) || 1), 1, total);
@@ -470,9 +470,9 @@ async function renderPdfPage(pageNumber, { manageBusy = true } = {}) {
   try {
     const page = await state.pendingPdfDoc.getPage(n);
     const base = page.getViewport({ scale: 1 });
-    let scale = Math.min(4, 2200 / Math.max(1, base.width));
-    if (base.width * scale * base.height * scale > 9_000_000) {
-      scale = Math.sqrt(9_000_000 / Math.max(1, base.width * base.height));
+    let scale = Math.min(4, targetWidth / Math.max(1, base.width));
+    if (base.width * scale * base.height * scale > 10_000_000) {
+      scale = Math.sqrt(10_000_000 / Math.max(1, base.width * base.height));
     }
     scale = clamp(scale, 0.5, 4);
     const viewport = page.getViewport({ scale });
@@ -499,10 +499,9 @@ async function renderPdfPage(pageNumber, { manageBusy = true } = {}) {
     dom.scorePreview.src = dataUrl;
     dom.dropEmpty.hidden = true;
     dom.dropPreview.hidden = false;
-    dom.importProgress.hidden = true;
-    dom.pdfPageInput.value = String(n);
-    dom.pdfPageField.hidden = false;
-    dom.pdfHint.innerHTML = `<b>PDF 第 ${n} / ${total} 页已转成图片。</b> 可修改上方页码；多页 PDF 请逐页导入识别。`;
+    if (hideProgress) dom.importProgress.hidden = true;
+    dom.pdfPageField.hidden = true;
+    dom.pdfHint.innerHTML = `<b>PDF 第 ${n} / ${total} 页已转成图片。</b> 点击「开始识谱」会自动处理全部 ${total} 页，并合并成一份琴谱。`;
   } catch (err) {
     if (seq !== pdfRenderSeq) return;
     dom.pdfHint.hidden = false;
@@ -533,9 +532,8 @@ async function handlePdfFile(file) {
     state.pendingPdfFile = file;
     state.pendingPdfPageCount = doc.numPages;
     state.pendingPdfPage = 1;
-    dom.pdfPageInput.max = String(doc.numPages);
-    dom.pdfPageInput.value = "1";
-    dom.pdfPageField.hidden = false;
+    dom.pdfPageField.hidden = true;
+    dom.pdfHint.innerHTML = `<b>PDF 共 ${doc.numPages} 页。</b> 将逐页识别并合并成一份琴谱。`;
     await renderPdfPage(1, { manageBusy: false });
   } catch (err) {
     clearPendingImage();
@@ -595,9 +593,140 @@ function clearPendingImage() {
   dom.importProgress.hidden = true;
 }
 
+function combinePdfScores(pageResults, skipped = []) {
+  const base = pageResults[0].score;
+  const baseMb = measureBeats(base.timeSignature) || 4;
+  const notes = [];
+  const pageNotes = [];
+  let measures = 0;
+  let offset = 0;
+  let confidenceTotal = 0;
+  for (const entry of pageResults) {
+    const score = entry.score;
+    const mb = measureBeats(score.timeSignature) || baseMb;
+    const pageEnd = Math.max(scoreEndBeat(score), (score.measures || 0) * mb);
+    for (const note of score.notes) {
+      notes.push({
+        ...note,
+        id: `pdf-${entry.page}-${notes.length}`,
+        start: note.start + offset,
+      });
+    }
+    measures += Math.max(1, score.measures || 1);
+    pageNotes.push(`第 ${entry.page} 页 ${score.notes.length} 音 / ${score.measures || 1} 小节`);
+    confidenceTotal += score.quality?.confidence || 0.55;
+    offset += pageEnd;
+  }
+  const warnings = [
+    "PDF 多页识别已按页拼接为一份琴谱；页与页之间的小节数由各页识别结果决定，请重点核对页尾和下一页开头。",
+    "原图面板只显示第一个识别成功的页面，其他页面已合并进钢琴卷帘。",
+    ...pageNotes,
+  ];
+  for (const item of skipped) warnings.push(`第 ${item.page} 页未识别：${item.message}`);
+  return createScore({
+    title: state.pendingTitle || base.title || "PDF 琴谱",
+    composer: base.composer || "",
+    tempo: base.tempo || Number(dom.imageTempo.value) || 84,
+    timeSignature: base.timeSignature || dom.imageTime.value,
+    keyFifths: base.keyFifths ?? (Number(dom.imageKey.value) || 0),
+    notes,
+    measures: Math.max(1, measures),
+    source: { type: "pdf-multi", pages: pageResults.length },
+    quality: {
+      confidence: clamp(confidenceTotal / pageResults.length, 0.25, 0.9),
+      warnings,
+    },
+  });
+}
+
+async function recognizePdfDocument() {
+  const total = state.pendingPdfPageCount || state.pendingPdfDoc?.numPages || 1;
+  setupProgress();
+  setImportBusy(true, `正在识别 PDF（共 ${total} 页）…`);
+  updateProgress({ pct: 1, label: `PDF 共 ${total} 页，准备逐页识别…`, step: "read" });
+  const pageResults = [];
+  const skipped = [];
+  try {
+    for (let page = 1; page <= total; page++) {
+      try {
+        await renderPdfPage(page, { manageBusy: false, targetWidth: 2200, hideProgress: false });
+        const pageImage = state.pendingImage;
+        if (!pageImage) throw new Error("PDF 页面没有成功转换");
+        const result = await recognizeStaffImage(pageImage.file, {
+          timeSignature: dom.imageTime.value,
+          keyFifths: Number(dom.imageKey.value) || 0,
+          tempo: Number(dom.imageTempo.value) || 84,
+          fileName: pageImage.name,
+          title: state.pendingTitle || "PDF 琴谱",
+          // Keep the render sharper for the source panel, but hand OMR the
+          // resolution its heuristics were tuned for.
+          maxWidth: 2200,
+          maxHeight: 3400,
+        }, (p) => {
+          const pct = ((page - 1) + clamp(p.pct, 0, 100) / 100) / total * 94;
+          updateProgress({
+            pct,
+            label: `PDF 第 ${page} / ${total} 页 · ${p.label || "识别中"}`,
+            step: p.step,
+          });
+        });
+        result.score.title = state.pendingTitle || "PDF 琴谱";
+        pageResults.push({
+          score: result.score,
+          page,
+          dataUrl: pageResults.length === 0 ? pageImage.dataUrl : null,
+          thumb: pageResults.length === 0 ? await makeThumbnail(pageImage.dataUrl) : null,
+        });
+        updateProgress({
+          pct: page / total * 94,
+          label: `PDF 第 ${page} / ${total} 页完成`,
+          step: "notes",
+        });
+      } catch (err) {
+        skipped.push({ page, message: err?.message || "识别失败" });
+        updateProgress({
+          pct: page / total * 94,
+          label: `PDF 第 ${page} / ${total} 页跳过`,
+          step: "notes",
+        });
+      }
+    }
+    if (!pageResults.length) {
+      throw new Error(skipped[0]?.message || "PDF 没有识别出可用的页面。");
+    }
+    const combined = combinePdfScores(pageResults, skipped);
+    const first = pageResults[0];
+    state.sourceImage = first.dataUrl;
+    state.sourceThumb = first.thumb;
+    state.sourceType = "staff-image";
+    state.sourceName = state.pendingPdfFile?.name || "琴谱.pdf";
+    state.recognitionDebug = { pdfPages: total, recognized: pageResults.length, skipped };
+    updateProgress({ pct: 100, label: "PDF 识别完成", step: "done" });
+    dom.importDialog.close();
+    prepareReview(combined);
+    switchView("review");
+    const skippedText = skipped.length ? `，跳过 ${skipped.length} 页` : "";
+    toast(`已合并 ${pageResults.length} 页，共 ${combined.notes.length} 个音${skippedText}。请逐页核对。`, "success", 5600);
+    if (skipped.length) {
+      toast(`第 ${skipped.map((s) => s.page).join("、")} 页未识别：${skipped[0].message}`, "error", 6200);
+    }
+  } catch (err) {
+    dom.progressTitle.textContent = "PDF 识谱没有完成";
+    dom.progressPct.textContent = "—";
+    dom.progressFill.style.width = "0%";
+    toast(err.message || "PDF 识别失败，请换一个文件。", "error", 5600);
+  } finally {
+    setImportBusy(false);
+  }
+}
+
 async function startStaffRecognition() {
-  if (!state.pendingImage) {
+  if (!state.pendingImage && !state.pendingPdfDoc) {
     dom.scoreFile.click();
+    return;
+  }
+  if (state.pendingPdfDoc) {
+    await recognizePdfDocument();
     return;
   }
   setupProgress();
@@ -605,15 +734,12 @@ async function startStaffRecognition() {
   updateProgress({ pct: 2, label: "准备读取图片…", step: "read" });
   try {
     await new Promise((r) => setTimeout(r, 60));
-    const isPdfPage = Boolean(state.pendingImage.pdfPage);
     const result = await recognizeStaffImage(state.pendingImage.file, {
       timeSignature: dom.imageTime.value,
       keyFifths: Number(dom.imageKey.value) || 0,
       tempo: Number(dom.imageTempo.value) || 84,
       fileName: state.pendingImage.name,
       title: state.pendingTitle || "图片识谱",
-      maxWidth: isPdfPage ? 2200 : undefined,
-      maxHeight: isPdfPage ? 3400 : undefined,
     }, (p) => updateProgress(p));
     result.score.title = state.pendingTitle || "图片识谱";
     state.sourceImage = state.pendingImage.dataUrl;
