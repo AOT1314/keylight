@@ -419,7 +419,7 @@
               <svg viewBox="0 0 24 24"><path d="M4 5.5C6.5 4 9.5 4 12 5.5 14.5 4 17.5 4 20 5.5V19c-2.5-1.5-5.5-1.5-8 0-2.5-1.5-5.5-1.5-8 0z"/><path d="M12 5.5V19"/></svg>
               原谱
             </button>
-            <button class="pill-btn btn-icon" id="btnFullscreen" title="全屏" aria-label="全屏">
+            <button class="pill-btn btn-icon" id="btnFullscreen" title="放大演示" aria-label="放大演示">
               <svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5m11-5v5h-5"/></svg>
             </button>
           </div>
@@ -434,6 +434,7 @@
 
         <div class="stage" id="stage">
           <canvas id="stageCanvas" aria-label="琴键跟弹视图"></canvas>
+          <button class="focus-exit" id="btnExitFocus" type="button" hidden>退出大屏</button>
           <div class="stage-top-hud">
             <div class="measure-hud"><small id="measureLabel">第 1 小节</small><b id="beatLabel">1 · 2 · 3 · 4</b></div>
             <div class="stage-legend"><span><i class="rh"></i>右手</span><span><i class="lh"></i>左手</span></div>

@@ -1052,11 +1052,25 @@ async function toggleReviewPreview() {
   await playback.play(pos, { countIn: false });
 }
 
+function setPlayFocus(on) {
+  if (!dom.viewPlay) return;
+  dom.viewPlay.classList.toggle("is-focus", on);
+  if (dom.btnExitFocus) dom.btnExitFocus.hidden = !on;
+  dom.btnFullscreen?.classList.toggle("is-on", on);
+  requestAnimationFrame(() => {
+    if (state.view === "play") {
+      stage?.draw();
+      setTimeout(() => stage?.draw(), 120);
+    }
+  });
+}
+
 async function enterPlay({ autoplay = false } = {}) {
   if (!state.score?.notes.length) {
     toast("还没有可播放的音符。", "error");
     return;
   }
+  setPlayFocus(false);
   saveCurrentProject();
   playback.pause();
   playback.stop();
@@ -1103,6 +1117,7 @@ async function enterPlay({ autoplay = false } = {}) {
 function leavePlay(toReview = true) {
   playback.pause();
   playback.setLoop(false);
+  setPlayFocus(false);
   stage.stop();
   keepScreenAwake(false);
   dom.sheetPop.hidden = true;
@@ -1306,7 +1321,7 @@ function cacheDom() {
     "btnUndo", "btnRedo", "btnQuantize", "newDuration", "rollCanvas", "rollEmpty",
     "sourceImage", "sourceEmpty", "sourceViewport", "zoomLabel", "btnZoomIn", "btnZoomOut",
     "btnZoomFit", "inspector", "reviewGrid", "sourcePanel", "playTitle", "playMeta", "btnHands", "btnLabels",
-    "btnMetronome", "btnLoop", "speedLabel", "speedRange", "btnSheetToggle", "btnFullscreen",
+    "btnMetronome", "btnLoop", "speedLabel", "speedRange", "btnSheetToggle", "btnFullscreen", "btnExitFocus",
     "btnPlayBack", "btnPlayEdit", "nbTitle", "nbKeys", "stage", "stageCanvas", "measureLabel",
     "beatLabel", "countIn", "countInNum", "stageEmpty", "sheetPop", "btnCloseSheet",
     "playSheetImage", "sheetPopEmpty", "btnTransport", "btnPause", "btnPauseText",
@@ -1580,13 +1595,23 @@ function bindEvents() {
     dom.btnSheetToggle.classList.remove("is-on");
   });
   dom.btnFullscreen.addEventListener("click", async () => {
+    if (dom.viewPlay.classList.contains("is-focus")) {
+      setPlayFocus(false);
+      return;
+    }
+    // iPhone Safari has no element fullscreen; use the in-app focus layout.
+    if (isIosDevice() || window.innerWidth <= 900 || !dom.stage.requestFullscreen) {
+      setPlayFocus(true);
+      return;
+    }
     try {
       if (!document.fullscreenElement) await dom.stage.requestFullscreen();
       else await document.exitFullscreen();
     } catch {
-      toast("当前浏览器不支持全屏。");
+      setPlayFocus(true);
     }
   });
+  dom.btnExitFocus.addEventListener("click", () => setPlayFocus(false));
   dom.helpDialog.addEventListener("click", (e) => {
     if (e.target === dom.helpDialog) dom.helpDialog.close();
   });
