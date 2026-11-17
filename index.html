@@ -542,15 +542,23 @@
               </select>
             </label>
             <label class="field">
-              <span>调号</span>
+              <span>调号（按谱面选择）</span>
               <select id="imageKey">
                 <option value="0">C 大调 / a 小调</option>
                 <option value="1">G 大调（1♯）</option>
                 <option value="2">D 大调（2♯）</option>
                 <option value="3">A 大调（3♯）</option>
+                <option value="4">E 大调 / 升 c 小调（4♯）</option>
+                <option value="5">B 大调（5♯）</option>
+                <option value="6">F♯ 大调（6♯）</option>
+                <option value="7">C♯ 大调（7♯）</option>
                 <option value="-1">F 大调（1♭）</option>
                 <option value="-2">B♭ 大调（2♭）</option>
                 <option value="-3">E♭ 大调（3♭）</option>
+                <option value="-4">A♭ 大调（4♭）</option>
+                <option value="-5">D♭ 大调（5♭）</option>
+                <option value="-6">G♭ 大调（6♭）</option>
+                <option value="-7">C♭ 大调（7♭）</option>
               </select>
             </label>
             <label class="field">
@@ -574,7 +582,7 @@
 
           <div class="image-read-note" id="imageReadNote">
             <span class="read-dot"></span>
-            <p><b>识谱方式：</b>五线谱和 PDF 在本机转成图片后识别；简谱图片会调用 Windows 本地文字识别辅助提取数字，不会上传网络。</p>
+            <p><b>识谱方式：</b>五线谱和 PDF 在本机转成图片后识别；简谱图片会调用 Windows 本地文字识别辅助提取数字，不会上传网络。调号不会自动识别，请按谱号后的升降号选择，否则音高会整体错。</p>
           </div>
 
           <div class="import-progress" id="importProgress" hidden>
@@ -589,8 +597,9 @@
             <label class="field"><span>调号</span>
               <select id="jianpuKey">
                 <option value="C">1 = C</option><option value="G">1 = G</option><option value="D">1 = D</option>
-                <option value="A">1 = A</option><option value="F">1 = F</option><option value="Bb">1 = B♭</option>
-                <option value="Eb">1 = E♭</option>
+                <option value="A">1 = A</option><option value="E">1 = E</option><option value="B">1 = B</option>
+                <option value="F">1 = F</option><option value="Bb">1 = B♭</option><option value="Eb">1 = E♭</option>
+                <option value="Ab">1 = A♭</option>
               </select>
             </label>
             <label class="field"><span>拍号</span>

@@ -2,7 +2,7 @@
    Registered only on HTTPS; the local LAN version still installs to the iOS
    home screen, but iOS does not allow service workers over plain HTTP. */
 
-const CACHE = "keylight-shell-v8";
+const CACHE = "keylight-shell-v9";
 const SHELL = [
   "./",
   "./index.html",
