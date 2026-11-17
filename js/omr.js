@@ -718,10 +718,15 @@ export async function recognizeStaffImage(source, options = {}, onProgress = () 
   const { image, width: iw, height: ih } = loaded;
 
   // Work at a useful resolution: enough for staff lines and noteheads, but
-  // small enough to keep recognition responsive in the browser.
-  let scale = clamp(1700 / iw, 0.7, 2.1);
-  if (iw * scale > 2300) scale = 2300 / iw;
-  if (ih * scale > 3100) scale = Math.min(scale, 3100 / ih);
+  // small enough to keep recognition responsive in the browser. PDF pages can
+  // ask for their native rendered resolution, which matters for dense scores
+  // where staff lines are only a few pixels apart.
+  const requestedWidth = clamp(Number(options.maxWidth) || 1700, 1000, 3200);
+  const maxWidth = clamp(Number(options.maxWidth) || 2300, 1000, 3200);
+  const maxHeight = clamp(Number(options.maxHeight) || 3100, 1200, 4200);
+  let scale = clamp(requestedWidth / iw, 0.7, 2.1);
+  if (iw * scale > maxWidth) scale = maxWidth / iw;
+  if (ih * scale > maxHeight) scale = Math.min(scale, maxHeight / ih);
   const w = Math.max(500, Math.round(iw * scale));
   const h = Math.max(400, Math.round(ih * scale));
   const canvas = makeCanvas(w, h);
@@ -762,7 +767,7 @@ export async function recognizeStaffImage(source, options = {}, onProgress = () 
   const staffResult = findStaves(binary, w, h);
   const { staves } = staffResult;
   if (!staves.length) {
-    throw new Error("没有找到完整的五线谱表。请确认图片是正对拍摄的清晰印刷谱，或改用「简谱输入」。");
+    throw new Error("没有找到完整的五线谱表。整页密集钢琴谱请尝试把每 1–2 行谱表裁成单独图片，或导出更高分辨率；复杂谱建议改用 MusicXML / MIDI。");
   }
   for (const st of staves) {
     const ext = staffLineExtent(binary, w, h, st);

@@ -485,13 +485,14 @@ async function renderPdfPage(pageNumber, { manageBusy = true } = {}) {
     await page.render({ canvasContext: ctx, viewport }).promise;
     if (seq !== pdfRenderSeq) return;
     const blob = await new Promise((resolve, reject) => {
-      canvas.toBlob((value) => value ? resolve(value) : reject(new Error("PDF 页面转换失败")), "image/jpeg", 0.9);
+      // Lossless PNG keeps thin staff lines from being blurred by JPEG.
+      canvas.toBlob((value) => value ? resolve(value) : reject(new Error("PDF 页面转换失败")), "image/png");
     });
     if (seq !== pdfRenderSeq) return;
-    const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
+    const dataUrl = canvas.toDataURL("image/png");
     const originalName = state.pendingPdfFile?.name || "琴谱.pdf";
-    const imageName = `${originalName.replace(/\.pdf$/i, "")}-第${n}页.jpg`;
-    const imageFile = new File([blob], imageName, { type: "image/jpeg", lastModified: Date.now() });
+    const imageName = `${originalName.replace(/\.pdf$/i, "")}-第${n}页.png`;
+    const imageFile = new File([blob], imageName, { type: "image/png", lastModified: Date.now() });
     state.pendingPdfPage = n;
     state.pendingImage = { file: imageFile, dataUrl, name: imageName, pdfPage: n };
     state.pendingTitle = titleFromFilename(originalName) || "PDF 琴谱";
@@ -604,12 +605,15 @@ async function startStaffRecognition() {
   updateProgress({ pct: 2, label: "准备读取图片…", step: "read" });
   try {
     await new Promise((r) => setTimeout(r, 60));
+    const isPdfPage = Boolean(state.pendingImage.pdfPage);
     const result = await recognizeStaffImage(state.pendingImage.file, {
       timeSignature: dom.imageTime.value,
       keyFifths: Number(dom.imageKey.value) || 0,
       tempo: Number(dom.imageTempo.value) || 84,
       fileName: state.pendingImage.name,
       title: state.pendingTitle || "图片识谱",
+      maxWidth: isPdfPage ? 2200 : undefined,
+      maxHeight: isPdfPage ? 3400 : undefined,
     }, (p) => updateProgress(p));
     result.score.title = state.pendingTitle || "图片识谱";
     state.sourceImage = state.pendingImage.dataUrl;
